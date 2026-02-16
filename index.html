@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v1.1.0 -->
+<!-- v1.1.1 -->
 <html lang="en">
 
 <head>
@@ -136,7 +136,7 @@
     <button id="playBtn" class="disabled">Play</button>
   </div>
   <div id="toast" class="toast"></div>
-  <div class="version">v1.1.0</div>
+  <div class="version">v1.1.1</div>
 
   <script>
     const recordBtn = document.getElementById('recordBtn');
@@ -244,6 +244,19 @@
       }
       chunks = [];
 
+      // Normalize audio (maximize volume)
+      let peak = 0;
+      for (let i = 0; i < recordedSamples.length; i++) {
+        const abs = Math.abs(recordedSamples[i]);
+        if (abs > peak) peak = abs;
+      }
+      if (peak > 0.001) {
+        const gain = 0.95 / peak;
+        for (let i = 0; i < recordedSamples.length; i++) {
+          recordedSamples[i] *= gain;
+        }
+      }
+
       stopTimer();
       isRecording = false;
       recordBtn.textContent = 'Record';
@@ -288,7 +301,11 @@
         };
 
         sourceNode.connect(scriptNode);
-        scriptNode.connect(audioCtx.destination); // required for processing
+        // Connect through a muted gain node (prevents mic feedback through speakers)
+        const muteNode = audioCtx.createGain();
+        muteNode.gain.value = 0;
+        scriptNode.connect(muteNode);
+        muteNode.connect(audioCtx.destination);
 
         isRecording = true;
         recordBtn.textContent = 'Stop';
@@ -320,7 +337,12 @@
 
         playbackSource = playbackCtx.createBufferSource();
         playbackSource.buffer = buffer;
-        playbackSource.connect(playbackCtx.destination);
+
+        // Gain node for clear, loud playback
+        const gainNode = playbackCtx.createGain();
+        gainNode.gain.value = 1.5;
+        playbackSource.connect(gainNode);
+        gainNode.connect(playbackCtx.destination);
 
         playbackSource.onended = () => {
           stopTimer();
