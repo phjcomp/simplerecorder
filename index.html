@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v1.0.2 -->
+<!-- v1.0.3 -->
 <html lang="en">
 
 <head>
@@ -107,6 +107,14 @@
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+
+    .version {
+      position: fixed;
+      bottom: 12px;
+      right: 16px;
+      color: #444;
+      font-size: 12px;
+    }
   </style>
 </head>
 
@@ -118,6 +126,7 @@
   </div>
   <audio id="audioEl" preload="auto"></audio>
   <div id="toast" class="toast"></div>
+  <div class="version">v1.0.3</div>
 
   <script>
     const recordBtn = document.getElementById('recordBtn');
