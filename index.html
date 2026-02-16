@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Simple Recorder</title>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  .container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100dvh;
+    padding: 32px 24px;
+    gap: 24px;
+  }
+
+  button {
+    width: 100%;
+    max-width: 500px;
+    height: 120px;
+    border: none;
+    border-radius: 16px;
+    font-size: 32px;
+    font-weight: 700;
+    color: #fff;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  button:active {
+    transform: scale(0.97);
+  }
+
+  #recordBtn {
+    background: #FF0000;
+  }
+
+  #recordBtn.recording {
+    background: #CC0000;
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  #playBtn {
+    background: #00C853;
+  }
+
+  #playBtn.disabled {
+    background: #333;
+    opacity: 0.6;
+  }
+
+  #playBtn.playing {
+    background: #009624;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  .toast {
+    position: fixed;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: rgba(255,255,255,0.15);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: #fff;
+    padding: 12px 24px;
+    border-radius: 24px;
+    font-size: 14px;
+    opacity: 0;
+    transition: all 0.3s ease;
+    pointer-events: none;
+  }
+
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <button id="recordBtn">Record</button>
+  <button id="playBtn" class="disabled">Play</button>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+  const recordBtn = document.getElementById('recordBtn');
+  const playBtn   = document.getElementById('playBtn');
+  const toastEl   = document.getElementById('toast');
+
+  let mediaRecorder = null;
+  let audioChunks   = [];
+  let audioBlob     = null;
+  let audioUrl      = null;
+  let audioPlayer   = null;
+  let isRecording   = false;
+  let isPlaying     = false;
+
+  // ── Toast ──
+  let toastTimer = null;
+  function showToast(msg) {
+    clearTimeout(toastTimer);
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2000);
+  }
+
+  // ── Stop playback helper ──
+  function stopPlayback() {
+    if (audioPlayer) {
+      audioPlayer.pause();
+      audioPlayer.currentTime = 0;
+      audioPlayer = null;
+    }
+    isPlaying = false;
+    playBtn.textContent = 'Play';
+    playBtn.classList.remove('playing');
+  }
+
+  // ── Record ──
+  recordBtn.addEventListener('click', async () => {
+    if (isRecording) {
+      // Stop recording
+      mediaRecorder.stop();
+      return; // onstop handler will update UI
+    }
+
+    // Stop playback if active
+    if (isPlaying) stopPlayback();
+
+    // Discard previous recording
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      audioUrl  = null;
+      audioBlob = null;
+    }
+    playBtn.classList.add('disabled');
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          sampleRate: 48000,
+          channelCount: 1
+        }
+      });
+
+      // Prefer high-quality codec
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        // Stop all mic tracks
+        stream.getTracks().forEach(t => t.stop());
+
+        audioBlob = new Blob(audioChunks, { type: mimeType });
+        audioUrl  = URL.createObjectURL(audioBlob);
+
+        isRecording = false;
+        recordBtn.textContent = 'Record';
+        recordBtn.classList.remove('recording');
+        playBtn.classList.remove('disabled');
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      recordBtn.textContent = 'Stop';
+      recordBtn.classList.add('recording');
+    } catch (err) {
+      showToast('Microphone access denied');
+      console.error(err);
+    }
+  });
+
+  // ── Play ──
+  playBtn.addEventListener('click', () => {
+    if (!audioUrl) {
+      showToast('No recording yet');
+      return;
+    }
+
+    if (isPlaying) {
+      stopPlayback();
+      return;
+    }
+
+    audioPlayer = new Audio(audioUrl);
+    audioPlayer.play();
+    isPlaying = true;
+    playBtn.textContent = 'Stop';
+    playBtn.classList.add('playing');
+
+    audioPlayer.onended = () => {
+      isPlaying = false;
+      playBtn.textContent = 'Play';
+      playBtn.classList.remove('playing');
+    };
+  });
+</script>
+</body>
+</html>
