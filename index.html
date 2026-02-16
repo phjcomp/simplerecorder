@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v1.0.8 -->
+<!-- v1.1.0 -->
 <html lang="en">
 
 <head>
@@ -31,7 +31,15 @@
       align-items: center;
       height: 100dvh;
       padding: 32px 24px;
-      gap: 24px;
+      gap: 20px;
+    }
+
+    .timer {
+      font-size: 48px;
+      font-weight: 300;
+      color: #333;
+      font-variant-numeric: tabular-nums;
+      min-height: 58px;
     }
 
     button {
@@ -114,18 +122,8 @@
       position: fixed;
       bottom: 12px;
       right: 16px;
-      color: rgba(0, 0, 0, 0.3);
+      color: rgba(0, 0, 0, 0.25);
       font-size: 12px;
-    }
-
-    .debug {
-      position: fixed;
-      bottom: 12px;
-      left: 16px;
-      color: rgba(0, 0, 0, 0.3);
-      font-size: 10px;
-      max-width: 70%;
-      font-family: monospace;
     }
   </style>
 </head>
@@ -133,25 +131,62 @@
 <body>
 
   <div class="container">
+    <div id="timer" class="timer">0:00</div>
     <button id="recordBtn">Record</button>
     <button id="playBtn" class="disabled">Play</button>
   </div>
   <div id="toast" class="toast"></div>
-  <div class="version">v1.0.8</div>
-  <div id="debug" class="debug"></div>
+  <div class="version">v1.1.0</div>
 
   <script>
     const recordBtn = document.getElementById('recordBtn');
     const playBtn = document.getElementById('playBtn');
     const toastEl = document.getElementById('toast');
-    const debugEl = document.getElementById('debug');
+    const timerEl = document.getElementById('timer');
 
-    let mediaRecorder = null;
-    let audioChunks = [];
-    let dataUrl = null;     // base64 data URL for playback
+    // State
     let isRecording = false;
     let isPlaying = false;
-    let currentAudio = null;
+
+    // Audio data (raw PCM)
+    let recordedSamples = null;  // Float32Array
+    let recordedSampleRate = 0;
+
+    // Recording objects
+    let micStream = null;
+    let audioCtx = null;
+    let scriptNode = null;
+    let sourceNode = null;
+    let chunks = [];
+
+    // Playback objects
+    let playbackSource = null;
+    let playbackCtx = null;
+    let playbackStartTime = 0;
+
+    // Timer
+    let timerInterval = null;
+    let timerStart = 0;
+
+    function formatTime(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function startTimer() {
+      timerStart = Date.now();
+      timerEl.textContent = '0:00';
+      timerInterval = setInterval(() => {
+        const elapsed = (Date.now() - timerStart) / 1000;
+        timerEl.textContent = formatTime(elapsed);
+      }, 200);
+    }
+
+    function stopTimer() {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
 
     // ── Toast ──
     let toastTimer = null;
@@ -162,80 +197,111 @@
       toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2500);
     }
 
-    function setDebug(msg) {
-      debugEl.textContent = msg;
-    }
-
     // ── Stop playback ──
     function stopPlayback() {
-      if (currentAudio) {
-        currentAudio.pause();
-        currentAudio = null;
+      if (playbackSource) {
+        try { playbackSource.stop(); } catch (_) { }
+        playbackSource = null;
       }
+      stopTimer();
       isPlaying = false;
       playBtn.textContent = 'Play';
       playBtn.classList.remove('playing');
+      if (recordedSamples) {
+        timerEl.textContent = formatTime(recordedSamples.length / recordedSampleRate);
+      }
     }
 
-    // ── Record ──
+    // ── Stop recording ──
+    function stopRecording() {
+      if (!isRecording) return;
+
+      // Stop the script processor and mic
+      if (scriptNode) {
+        scriptNode.disconnect();
+        scriptNode = null;
+      }
+      if (sourceNode) {
+        sourceNode.disconnect();
+        sourceNode = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+      if (audioCtx) {
+        audioCtx.close();
+        audioCtx = null;
+      }
+
+      // Merge all chunks into one Float32Array
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      recordedSamples = new Float32Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        recordedSamples.set(chunk, offset);
+        offset += chunk.length;
+      }
+      chunks = [];
+
+      stopTimer();
+      isRecording = false;
+      recordBtn.textContent = 'Record';
+      recordBtn.classList.remove('recording');
+
+      if (recordedSamples.length > 0) {
+        playBtn.classList.remove('disabled');
+        timerEl.textContent = formatTime(recordedSamples.length / recordedSampleRate);
+      }
+    }
+
+    // ── Record button ──
     recordBtn.addEventListener('click', async () => {
       if (isRecording) {
-        mediaRecorder.stop();
+        stopRecording();
         return;
       }
 
+      // Stop playback if active
       if (isPlaying) stopPlayback();
 
       // Discard previous
-      dataUrl = null;
+      recordedSamples = null;
       playBtn.classList.add('disabled');
 
       try {
-        // Simple constraints - let the browser/device decide best settings
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-        // Let the browser choose the best format
-        mediaRecorder = new MediaRecorder(stream);
-        audioChunks = [];
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        recordedSampleRate = audioCtx.sampleRate;
 
-        setDebug('Rec: ' + mediaRecorder.mimeType);
+        sourceNode = audioCtx.createMediaStreamSource(micStream);
 
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunks.push(e.data);
+        // ScriptProcessorNode for raw PCM capture
+        const bufferSize = 4096;
+        scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+        chunks = [];
+
+        scriptNode.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          chunks.push(new Float32Array(input));
         };
 
-        mediaRecorder.onstop = () => {
-          stream.getTracks().forEach(t => t.stop());
+        sourceNode.connect(scriptNode);
+        scriptNode.connect(audioCtx.destination); // required for processing
 
-          const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-
-          // Convert blob to data URL (most compatible playback method)
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            dataUrl = reader.result;
-            setDebug(mediaRecorder.mimeType + ' | ' + (blob.size / 1024).toFixed(1) + 'KB');
-            playBtn.classList.remove('disabled');
-          };
-          reader.readAsDataURL(blob);
-
-          isRecording = false;
-          recordBtn.textContent = 'Record';
-          recordBtn.classList.remove('recording');
-        };
-
-        mediaRecorder.start();
         isRecording = true;
         recordBtn.textContent = 'Stop';
         recordBtn.classList.add('recording');
+        startTimer();
       } catch (err) {
-        showToast('Mic: ' + err.message);
-        setDebug('ERR: ' + err.message);
+        showToast('Mic error: ' + err.message);
       }
     });
 
-    // ── Play ──
+    // ── Play button (AudioContext playback of raw PCM) ──
     playBtn.addEventListener('click', () => {
-      if (!dataUrl) {
+      if (!recordedSamples || recordedSamples.length === 0) {
         showToast('No recording yet');
         return;
       }
@@ -246,36 +312,44 @@
       }
 
       try {
-        currentAudio = new Audio(dataUrl);
-        currentAudio.volume = 1.0;
+        playbackCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-        currentAudio.onended = () => {
+        // Create AudioBuffer from raw PCM samples
+        const buffer = playbackCtx.createBuffer(1, recordedSamples.length, recordedSampleRate);
+        buffer.getChannelData(0).set(recordedSamples);
+
+        playbackSource = playbackCtx.createBufferSource();
+        playbackSource.buffer = buffer;
+        playbackSource.connect(playbackCtx.destination);
+
+        playbackSource.onended = () => {
+          stopTimer();
           isPlaying = false;
           playBtn.textContent = 'Play';
           playBtn.classList.remove('playing');
-          setDebug('Done');
+          timerEl.textContent = formatTime(recordedSamples.length / recordedSampleRate);
+          playbackSource = null;
         };
 
-        currentAudio.onerror = (e) => {
-          setDebug('Audio ERR: ' + (currentAudio.error ? currentAudio.error.message : 'unknown'));
-          showToast('Audio error');
-          isPlaying = false;
-          playBtn.textContent = 'Play';
-          playBtn.classList.remove('playing');
-        };
+        playbackSource.start(0);
+        isPlaying = true;
+        playBtn.textContent = 'Stop';
+        playBtn.classList.add('playing');
 
-        currentAudio.play().then(() => {
-          isPlaying = true;
-          playBtn.textContent = 'Stop';
-          playBtn.classList.add('playing');
-          setDebug('Playing...');
-        }).catch(err => {
-          showToast('Play: ' + err.message);
-          setDebug('Play ERR: ' + err.message);
-        });
+        // Timer for playback
+        playbackStartTime = Date.now();
+        const totalDuration = recordedSamples.length / recordedSampleRate;
+        timerStart = Date.now();
+        timerEl.textContent = '0:00';
+        timerInterval = setInterval(() => {
+          const elapsed = (Date.now() - timerStart) / 1000;
+          timerEl.textContent = formatTime(elapsed) + ' / ' + formatTime(totalDuration);
+          if (elapsed >= totalDuration) {
+            stopTimer();
+          }
+        }, 200);
       } catch (err) {
-        showToast('Error: ' + err.message);
-        setDebug('ERR: ' + err.message);
+        showToast('Play error: ' + err.message);
       }
     });
   </script>
