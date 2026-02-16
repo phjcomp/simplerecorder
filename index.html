@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v1.0.4 -->
+<!-- v1.0.5 -->
 <html lang="en">
 
 <head>
@@ -114,7 +114,7 @@
       position: fixed;
       bottom: 12px;
       right: 16px;
-      color: #444;
+      color: rgba(255, 255, 255, 0.3);
       font-size: 12px;
     }
   </style>
@@ -128,7 +128,7 @@
   </div>
   <audio id="audioEl" preload="auto"></audio>
   <div id="toast" class="toast"></div>
-  <div class="version">v1.0.4</div>
+  <div class="version">v1.0.5</div>
 
   <script>
     const recordBtn = document.getElementById('recordBtn');
@@ -220,6 +220,7 @@
           const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
           audioUrl = URL.createObjectURL(blob);
           audioEl.src = audioUrl;
+          audioEl.load();
 
           isRecording = false;
           recordBtn.textContent = 'Record';
@@ -249,15 +250,18 @@
         return;
       }
 
-      audioEl.currentTime = 0;
-      audioEl.play().then(() => {
-        isPlaying = true;
-        playBtn.textContent = 'Stop';
-        playBtn.classList.add('playing');
-      }).catch(err => {
-        showToast('Playback failed');
-        console.error(err);
-      });
+      audioEl.load();
+      audioEl.oncanplaythrough = () => {
+        audioEl.oncanplaythrough = null;
+        audioEl.play().then(() => {
+          isPlaying = true;
+          playBtn.textContent = 'Stop';
+          playBtn.classList.add('playing');
+        }).catch(err => {
+          showToast('Playback error: ' + err.message);
+          console.error(err);
+        });
+      };
     });
   </script>
 </body>
