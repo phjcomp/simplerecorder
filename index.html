@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v1.0.5 -->
+<!-- v1.0.6 -->
 <html lang="en">
 
 <head>
@@ -117,6 +117,15 @@
       color: rgba(255, 255, 255, 0.3);
       font-size: 12px;
     }
+
+    .debug {
+      position: fixed;
+      bottom: 12px;
+      left: 16px;
+      color: rgba(255, 255, 255, 0.25);
+      font-size: 10px;
+      font-family: monospace;
+    }
   </style>
 </head>
 
@@ -126,21 +135,36 @@
     <button id="recordBtn">Record</button>
     <button id="playBtn" class="disabled">Play</button>
   </div>
-  <audio id="audioEl" preload="auto"></audio>
   <div id="toast" class="toast"></div>
-  <div class="version">v1.0.5</div>
+  <div class="version">v1.0.6</div>
+  <div id="debug" class="debug"></div>
 
   <script>
     const recordBtn = document.getElementById('recordBtn');
     const playBtn = document.getElementById('playBtn');
     const toastEl = document.getElementById('toast');
-    const audioEl = document.getElementById('audioEl');
+    const debugEl = document.getElementById('debug');
 
     let mediaRecorder = null;
     let audioChunks = [];
-    let audioUrl = null;
+    let recordedBlob = null;
     let isRecording = false;
     let isPlaying = false;
+
+    // AudioContext for reliable mobile playback
+    let audioCtx = null;
+    let currentSource = null;
+
+    function getAudioCtx() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      // Resume if suspended (mobile browser policy)
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
 
     // ── Toast ──
     let toastTimer = null;
@@ -148,24 +172,23 @@
       clearTimeout(toastTimer);
       toastEl.textContent = msg;
       toastEl.classList.add('show');
-      toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2000);
+      toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2500);
     }
 
-    // ── Stop playback helper ──
+    function setDebug(msg) {
+      debugEl.textContent = msg;
+    }
+
+    // ── Stop playback ──
     function stopPlayback() {
-      audioEl.pause();
-      audioEl.currentTime = 0;
+      if (currentSource) {
+        try { currentSource.stop(); } catch (_) { }
+        currentSource = null;
+      }
       isPlaying = false;
       playBtn.textContent = 'Play';
       playBtn.classList.remove('playing');
     }
-
-    // ── Playback ended ──
-    audioEl.addEventListener('ended', () => {
-      isPlaying = false;
-      playBtn.textContent = 'Play';
-      playBtn.classList.remove('playing');
-    });
 
     // ── Record ──
     recordBtn.addEventListener('click', async () => {
@@ -177,13 +200,8 @@
       // Stop playback if active
       if (isPlaying) stopPlayback();
 
-      // Discard previous recording
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-        audioUrl = null;
-        audioEl.removeAttribute('src');
-        audioEl.load();
-      }
+      // Discard previous
+      recordedBlob = null;
       playBtn.classList.add('disabled');
 
       try {
@@ -197,17 +215,17 @@
           }
         });
 
-        // Pick supported mime type
-        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-          ? 'audio/webm;codecs=opus'
-          : MediaRecorder.isTypeSupported('audio/mp4')
-            ? 'audio/mp4'
-            : '';
+        // Try supported formats
+        let options = {};
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          options.mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          options.mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+          options.mimeType = 'audio/webm';
+        }
 
-        mediaRecorder = mimeType
-          ? new MediaRecorder(stream, { mimeType })
-          : new MediaRecorder(stream);
-
+        mediaRecorder = new MediaRecorder(stream, options);
         audioChunks = [];
 
         mediaRecorder.ondataavailable = (e) => {
@@ -217,30 +235,34 @@
         mediaRecorder.onstop = () => {
           stream.getTracks().forEach(t => t.stop());
 
-          const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-          audioUrl = URL.createObjectURL(blob);
-          audioEl.src = audioUrl;
-          audioEl.load();
+          const usedMime = mediaRecorder.mimeType || 'audio/webm';
+          recordedBlob = new Blob(audioChunks, { type: usedMime });
+
+          setDebug(usedMime + ' | ' + (recordedBlob.size / 1024).toFixed(1) + 'KB');
 
           isRecording = false;
           recordBtn.textContent = 'Record';
           recordBtn.classList.remove('recording');
-          playBtn.classList.remove('disabled');
+
+          if (recordedBlob.size > 0) {
+            playBtn.classList.remove('disabled');
+          }
         };
 
-        mediaRecorder.start(1000);
+        mediaRecorder.start(500); // chunks every 500ms
         isRecording = true;
         recordBtn.textContent = 'Stop';
         recordBtn.classList.add('recording');
+        setDebug('Recording... (' + (options.mimeType || 'default') + ')');
       } catch (err) {
-        showToast('Microphone access denied');
-        console.error(err);
+        showToast('Mic error: ' + err.message);
+        setDebug('ERROR: ' + err.message);
       }
     });
 
-    // ── Play ──
-    playBtn.addEventListener('click', () => {
-      if (!audioUrl) {
+    // ── Play using AudioContext (reliable on mobile) ──
+    playBtn.addEventListener('click', async () => {
+      if (!recordedBlob || recordedBlob.size === 0) {
         showToast('No recording yet');
         return;
       }
@@ -250,18 +272,31 @@
         return;
       }
 
-      audioEl.load();
-      audioEl.oncanplaythrough = () => {
-        audioEl.oncanplaythrough = null;
-        audioEl.play().then(() => {
-          isPlaying = true;
-          playBtn.textContent = 'Stop';
-          playBtn.classList.add('playing');
-        }).catch(err => {
-          showToast('Playback error: ' + err.message);
-          console.error(err);
-        });
-      };
+      try {
+        const ctx = getAudioCtx();
+        const arrayBuffer = await recordedBlob.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+        currentSource = ctx.createBufferSource();
+        currentSource.buffer = audioBuffer;
+        currentSource.connect(ctx.destination);
+
+        currentSource.onended = () => {
+          isPlaying = false;
+          playBtn.textContent = 'Play';
+          playBtn.classList.remove('playing');
+          currentSource = null;
+        };
+
+        currentSource.start(0);
+        isPlaying = true;
+        playBtn.textContent = 'Stop';
+        playBtn.classList.add('playing');
+        setDebug('Playing ' + (audioBuffer.duration).toFixed(1) + 's');
+      } catch (err) {
+        showToast('Play error: ' + err.message);
+        setDebug('PLAY ERROR: ' + err.message);
+      }
     });
   </script>
 </body>
