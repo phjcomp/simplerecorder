@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- v1.1.1 -->
+<!-- v1.1.2 -->
 <html lang="en">
 
 <head>
@@ -52,7 +52,7 @@
       font-weight: 700;
       color: #fff;
       cursor: pointer;
-      transition: opacity 0.15s, transform 0.1s;
+      transition: opacity 0.15s, transform 0.05s;
       user-select: none;
       -webkit-user-select: none;
       touch-action: manipulation;
@@ -136,7 +136,7 @@
     <button id="playBtn" class="disabled">Play</button>
   </div>
   <div id="toast" class="toast"></div>
-  <div class="version">v1.1.1</div>
+  <div class="version">v1.1.2</div>
 
   <script>
     const recordBtn = document.getElementById('recordBtn');
@@ -268,8 +268,22 @@
       }
     }
 
+    // ── Fast tap helper (touchend fires ~100ms before click) ──
+    function onTap(el, handler) {
+      let touched = false;
+      el.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        touched = true;
+        handler();
+        setTimeout(() => { touched = false; }, 400);
+      }, { passive: false });
+      el.addEventListener('click', () => {
+        if (!touched) handler();
+      });
+    }
+
     // ── Record button ──
-    recordBtn.addEventListener('click', async () => {
+    onTap(recordBtn, async () => {
       if (isRecording) {
         stopRecording();
         return;
@@ -316,8 +330,8 @@
       }
     });
 
-    // ── Play button (AudioContext playback of raw PCM) ──
-    playBtn.addEventListener('click', () => {
+    // ── Play button ──
+    onTap(playBtn, () => {
       if (!recordedSamples || recordedSamples.length === 0) {
         showToast('No recording yet');
         return;
